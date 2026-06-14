@@ -578,6 +578,39 @@ if ($dryRun) {
                     $envContent = $envContent -replace "(?m)^AMD_INFERENCE_MANAGED=.*$", "AMD_INFERENCE_MANAGED=true"
                     [System.IO.File]::WriteAllText($envPath, $envContent, (New-Object System.Text.UTF8Encoding($false)))
                     Write-AISuccess "Patched .env for llama-server backend"
+
+                    $nativeModel = ([regex]::Match($envContent, "(?m)^GGUF_FILE=([^\r\n]+)\r?$")).Groups[1].Value.Trim().Trim('"').Trim("'")
+                    if ([string]::IsNullOrWhiteSpace($nativeModel)) { $nativeModel = $tierConfig.GgufFile }
+                    $nativePort = ([regex]::Match($envContent, "(?m)^AMD_INFERENCE_PORT=([^\r\n]+)\r?$")).Groups[1].Value.Trim().Trim('"').Trim("'")
+                    if ([string]::IsNullOrWhiteSpace($nativePort)) { $nativePort = "8080" }
+                    $nativeApiBase = "http://host.docker.internal:$nativePort/v1"
+                    $litellmDir = Join-Path (Join-Path $installDir "config") "litellm"
+                    New-Item -ItemType Directory -Path $litellmDir -Force | Out-Null
+                    $litellmLocal = @"
+model_list:
+  - model_name: default
+    litellm_params:
+      model: openai/$nativeModel
+      api_base: $nativeApiBase
+      api_key: not-needed
+
+  - model_name: "*"
+    litellm_params:
+      model: openai/*
+      api_base: $nativeApiBase
+      api_key: not-needed
+
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY
+
+litellm_settings:
+  drop_params: true
+  set_verbose: false
+  request_timeout: 120
+  stream_timeout: 60
+"@
+                    [System.IO.File]::WriteAllText((Join-Path $litellmDir "local.yaml"), $litellmLocal, (New-Object System.Text.UTF8Encoding($false)))
+                    Write-AISuccess "Patched LiteLLM local config for native llama-server"
                 }
             }
         }

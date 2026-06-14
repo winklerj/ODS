@@ -22,10 +22,12 @@ trap 'rm -rf "$tmp"' EXIT
 fakebin="$tmp/bin"
 install_dir="$tmp/install"
 trace="$tmp/powershell.trace"
+docker_trace="$tmp/docker.trace"
 mkdir -p \
     "$fakebin" \
     "$install_dir/data/hermes" \
     "$install_dir/data/models" \
+    "$install_dir/config/litellm" \
     "$install_dir/config/llama-server" \
     "$install_dir/extensions/services/hermes" \
     "$install_dir/llama-server"
@@ -72,6 +74,33 @@ exit 0
 EOF_PS
 chmod +x "$fakebin/powershell.exe"
 
+cat > "$fakebin/docker" <<'EOF_DOCKER'
+#!/usr/bin/env bash
+set -euo pipefail
+case " $* " in
+  " info ")
+    exit 0
+    ;;
+  " compose version ")
+    exit 0
+    ;;
+esac
+if [[ "${1:-}" == "ps" ]]; then
+  case " $* " in
+    *"name=dream-litellm"*)
+      printf 'dream-litellm\n'
+      ;;
+  esac
+  exit 0
+fi
+if [[ "${1:-}" == "restart" && "${2:-}" == "dream-litellm" ]]; then
+  printf 'restart dream-litellm\n' >> "${DREAM_FAKE_DOCKER_TRACE:?}"
+  exit 0
+fi
+exit 0
+EOF_DOCKER
+chmod +x "$fakebin/docker"
+
 cat > "$install_dir/.env" <<'EOF_ENV'
 DREAM_MODE=local
 GPU_BACKEND=amd
@@ -117,7 +146,7 @@ printf '#!/usr/bin/env bash\nexit 0\n' > "$install_dir/llama-server/llama-server
 chmod +x "$install_dir/llama-server/llama-server.exe"
 printf '1111\n' > "$install_dir/data/llama-server.pid"
 
-PATH="$fakebin:$PATH" DREAM_FAKE_PS_TRACE="$trace" bash "$TARGET" \
+PATH="$fakebin:$PATH" DREAM_FAKE_PS_TRACE="$trace" DREAM_FAKE_DOCKER_TRACE="$docker_trace" bash "$TARGET" \
     "$install_dir" \
     "Full.gguf" \
     "https://example.invalid/Full.gguf" \
@@ -157,6 +186,16 @@ grep -q '^  context_length: 32768$' "$install_dir/data/hermes/config.yaml" \
     || fail "Hermes live config should use the full-model context"
 grep -q '^    context_length: 32768$' "$install_dir/data/hermes/config.yaml" \
     || fail "Hermes auxiliary compression context should use the full-model context"
+grep -q 'model: openai/Full.gguf' "$install_dir/config/litellm/local.yaml" \
+    || fail "LiteLLM local config should route default requests to the bare full-model id"
+grep -q 'model: openai/\*' "$install_dir/config/litellm/local.yaml" \
+    || fail "LiteLLM local config should preserve wildcard model routing"
+grep -q 'api_base: http://host.docker.internal:8080/v1' "$install_dir/config/litellm/local.yaml" \
+    || fail "LiteLLM local config should route to the native Windows llama-server host endpoint"
+! grep -q 'api_base: http://llama-server:8080/v1' "$install_dir/config/litellm/local.yaml" \
+    || fail "LiteLLM local config must not point at the absent llama-server container"
+grep -q 'restart dream-litellm' "$docker_trace" \
+    || fail "bootstrap-upgrade should restart LiteLLM after refreshing the native Windows config"
 [[ ! -f "$install_dir/data/models/Bootstrap.gguf" ]] \
     || fail "bootstrap model should be removed after verified native Windows swap"
 grep -q '"status": "complete"' "$install_dir/data/bootstrap-status.json" \

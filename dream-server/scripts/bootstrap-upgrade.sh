@@ -751,6 +751,57 @@ patch_hermes_model_after_swap() {
     return 0
 }
 
+refresh_windows_native_litellm_local_config_after_swap() {
+    is_windows_bash || return 0
+
+    local runtime runtime_mode location managed
+    runtime="$(read_env_value AMD_INFERENCE_RUNTIME | tr '[:upper:]' '[:lower:]')"
+    runtime_mode="$(read_env_value AMD_INFERENCE_RUNTIME_MODE | tr '[:upper:]' '[:lower:]')"
+    location="$(read_env_value AMD_INFERENCE_LOCATION | tr '[:upper:]' '[:lower:]')"
+    managed="$(read_env_value AMD_INFERENCE_MANAGED | tr '[:upper:]' '[:lower:]')"
+
+    [[ "$managed" != "false" && "$location" == "host" ]] || return 0
+    [[ "$runtime_mode" == "windows-llama-server-fallback" || "$runtime" == "llama-server" ]] || return 0
+
+    local litellm_dir litellm_config native_port native_api_base model_sed
+    litellm_dir="$INSTALL_DIR/config/litellm"
+    litellm_config="$litellm_dir/local.yaml"
+    native_port="$(read_env_value AMD_INFERENCE_PORT)"
+    [[ -n "$native_port" ]] || native_port="8080"
+    native_api_base="http://host.docker.internal:${native_port}/v1"
+    model_sed="${FULL_GGUF_FILE//\"/\\\"}"
+
+    log "Updating LiteLLM local config for native Windows llama-server: ${FULL_GGUF_FILE}"
+    mkdir -p "$litellm_dir" || return 1
+    cat > "$litellm_config" << LITELLM_NATIVE_LOCAL_EOF
+model_list:
+  - model_name: default
+    litellm_params:
+      model: openai/${model_sed}
+      api_base: ${native_api_base}
+      api_key: not-needed
+
+  - model_name: "*"
+    litellm_params:
+      model: openai/*
+      api_base: ${native_api_base}
+      api_key: not-needed
+
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY
+
+litellm_settings:
+  drop_params: true
+  set_verbose: false
+  request_timeout: 120
+  stream_timeout: 60
+LITELLM_NATIVE_LOCAL_EOF
+
+    if [[ -n "$DOCKER_CMD" ]] && $DOCKER_CMD ps --filter name=dream-litellm --format '{{.Names}}' 2>/dev/null | grep -q dream-litellm; then
+        $DOCKER_CMD restart dream-litellm 2>&1 || log "WARNING: LiteLLM restart failed after native Windows config refresh (non-fatal)"
+    fi
+}
+
 refresh_lemonade_after_bootstrap_cleanup() {
     local gpu_backend llm_backend
     gpu_backend="$(read_env_value GPU_BACKEND | tr '[:upper:]' '[:lower:]')"
@@ -1150,6 +1201,13 @@ elif [[ "$_windows_native_llama_swap_applies" == "true" ]]; then
             restore_active_model_config || log "WARNING: could not restore active model config; inspect $ENV_FILE and $MODELS_INI"
             write_status "failed" 100 "$TOTAL_BYTES" "$TOTAL_BYTES" 0 \
                 "Full model downloaded and loaded in native Windows llama-server, but the Hermes config patch failed after swap. Previous active model config restored; re-run to retry."
+            exit 1
+        fi
+        if ! refresh_windows_native_litellm_local_config_after_swap; then
+            log "Restoring previous active model config after LiteLLM config refresh failure..."
+            restore_active_model_config || log "WARNING: could not restore active model config; inspect $ENV_FILE and $MODELS_INI"
+            write_status "failed" 100 "$TOTAL_BYTES" "$TOTAL_BYTES" 0 \
+                "Full model downloaded and loaded in native Windows llama-server, but the LiteLLM local config refresh failed after swap. Previous active model config restored; re-run to retry."
             exit 1
         fi
         HOT_SWAP_VERIFIED=true
