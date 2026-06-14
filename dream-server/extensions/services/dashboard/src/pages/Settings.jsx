@@ -9,10 +9,13 @@ import {
   UserPlus,
   CreditCard,
   ChevronRight,
+  Moon,
+  Sun,
 } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import EnvEditor from '../components/settings/EnvEditor'
+import { useTheme } from '../contexts/ThemeContext'
 
 const fetchJson = async (url, ms = 8000, options = {}) => {
   const c = new AbortController()
@@ -75,6 +78,7 @@ const matchesEnvSearch = (key, field, query) => {
 }
 
 export default function Settings() {
+  const { theme, setTheme } = useTheme()
   const [version, setVersion] = useState(null)
   const [storage, setStorage] = useState(null)
   const [services, setServices] = useState([])
@@ -251,6 +255,19 @@ export default function Settings() {
       <div className="max-w-5xl space-y-6 liquid-metal-sequence-grid liquid-metal-sequence-grid--services">
         <SettingsSection title="System Identity" icon={Server}><div className="grid gap-4 sm:grid-cols-2"><InfoRow label="Version" value={version?.version || 'Unknown'} /><InfoRow label="Install Date" value={version?.install_date || 'Unknown'} /><InfoRow label="Tier" value={version?.tier || 'Community'} /><InfoRow label="Uptime" value={version?.uptime || 'Unknown'} /></div></SettingsSection>
 
+        <SettingsSection title="Appearance" icon={theme === 'light' ? Sun : Moon}>
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <p className="text-sm font-medium text-theme-text">Color mode</p>
+              <p className="mt-1 text-xs text-theme-text-muted">Choose how the dashboard appears on this browser.</p>
+            </div>
+            <div className="inline-flex self-start rounded-lg border border-theme-border bg-black/[0.12] p-1">
+              <ThemeModeButton active={theme !== 'light'} icon={Moon} label="Dark" onClick={() => setTheme('dream')} />
+              <ThemeModeButton active={theme === 'light'} icon={Sun} label="Light" onClick={() => setTheme('light')} />
+            </div>
+          </div>
+        </SettingsSection>
+
         <SettingsSection title="Account" icon={SettingsIcon}>
           <div className="divide-y divide-theme-border">
             <SettingsNavRow
@@ -287,6 +304,24 @@ export default function Settings() {
 
 function SettingsSection({ title, icon: Icon, children }) { return <div className="liquid-metal-frame liquid-metal-sequence-card bg-theme-card border border-theme-border rounded-xl"><div className="flex items-center gap-3 p-4 border-b border-theme-border"><Icon size={20} className="text-theme-text-muted" /><h2 className="text-lg font-semibold text-theme-text">{title}</h2></div><div className="p-4">{children}</div></div> }
 function InfoRow({ label, value }) { return <div className="flex items-center justify-between py-2 gap-4"><span className="text-sm text-theme-text-muted">{label}</span><span className="text-sm text-theme-text font-medium font-mono text-right break-all">{value}</span></div> }
+
+function ThemeModeButton({ active, icon: Icon, label, onClick }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`flex h-9 items-center gap-2 rounded-md px-3 text-xs font-semibold transition-colors ${
+        active
+          ? 'bg-theme-accent/25 text-theme-accent-light'
+          : 'text-theme-text-muted hover:text-theme-text'
+      }`}
+      aria-pressed={active}
+    >
+      <Icon size={14} />
+      {label}
+    </button>
+  )
+}
 
 function Banner({ tone = 'info', children, onClose }) {
   const cls = tone === 'danger' ? 'border-red-500/20 bg-red-500/10 text-red-200' : tone === 'warn' ? 'border-yellow-500/20 bg-yellow-500/10 text-yellow-100' : 'border-theme-accent/20 bg-theme-accent/10 text-theme-text'
