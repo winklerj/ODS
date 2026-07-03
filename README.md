@@ -471,3 +471,5 @@ Apache 2.0 — Use it, modify it, ship it. See [LICENSE](LICENSE).
 *Built by [Light Heart Labs](https://github.com/Light-Heart-Labs) and the growing resistance that refuses to rent what should be owned.*
 
 </div>
+
+This project is written in Rust.
