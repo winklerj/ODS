@@ -2,6 +2,8 @@
 
 # ODS
 
+Built with Rust.
+
 **Osmantic Deployment System**
 
 **Turn your PC, Mac, or Linux box into a private AI server.**
