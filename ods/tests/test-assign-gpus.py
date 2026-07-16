@@ -629,3 +629,61 @@ class TestParallelismModeSelection:
     def test_mem_util_pipeline_is_095(self):
         _, out, _ = run(fixture_path("nvidia_smi_topo_matrix_4gpus_soc.json"), 100000)
         assert parallelism(out)["gpu_memory_utilization"] == 0.95
+
+
+# ── --check-gpus (drift check against a persisted assignment) ────────────────
+
+def run_check_gpus(topology_path, indices_csv):
+    cmd = [sys.executable, SCRIPT, "--topology", topology_path, "--check-gpus", indices_csv]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    output = None
+    if result.returncode == 0:
+        output = json.loads(result.stdout)
+    return result.returncode, output, result.stderr
+
+
+class TestCheckGpus:
+    """--check-gpus recomputes select_parallelism() for an already-chosen GPU
+    subset, independent of model size or service placement — this is what a
+    drift check (persisted assignment vs. current topology) calls."""
+
+    def test_matches_full_assignment_for_same_subset(self):
+        topo = fixture_path("nvidia_smi_topo_matrix_4gpus_sys_separated_nv_pairs.json")
+        _, full_out, _ = run(topo, 100000)
+        llama_indices = ",".join(str(i) for i in full_out["services"]["llama_server"]["gpu_indices"])
+        rc, checked, _ = run_check_gpus(topo, llama_indices)
+        assert rc == 0
+        assert checked["parallelism"] == parallelism(full_out)
+
+    def test_does_not_require_model_size(self):
+        topo = fixture_path("nvidia_smi_topo_matrix_4gpus_soc.json")
+        rc, out, stderr = run_check_gpus(topo, "0,1")
+        assert rc == 0, stderr
+        assert out["parallelism"]["mode"] == "pipeline"
+
+    def test_reports_min_link_rank(self):
+        topo = fixture_path("nvidia_smi_topo_matrix_2gpus_phb_coloc.json")
+        rc, out, _ = run_check_gpus(topo, "0,1")
+        assert rc == 0
+        assert out["min_link_rank"] == 30
+
+    def test_single_gpu_mode_none(self):
+        topo = fixture_path("nvidia_smi_topo_matrix_4gpus_soc.json")
+        rc, out, _ = run_check_gpus(topo, "0")
+        assert rc == 0
+        assert out["parallelism"]["mode"] == "none"
+
+    def test_unknown_index_errors(self):
+        topo = fixture_path("nvidia_smi_topo_matrix_2gpus_phb_coloc.json")
+        rc, _, stderr = run_check_gpus(topo, "0,9")
+        assert rc == 1
+        assert "not found in topology" in stderr
+
+    def test_missing_model_size_and_check_gpus_errors(self):
+        topo = fixture_path("nvidia_smi_topo_matrix_2gpus_phb_coloc.json")
+        result = subprocess.run(
+            [sys.executable, SCRIPT, "--topology", topo],
+            capture_output=True, text=True,
+        )
+        assert result.returncode == 1
+        assert "model-size" in result.stderr.lower()

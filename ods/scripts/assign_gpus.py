@@ -443,9 +443,16 @@ def build_output(result: AssignmentResult) -> dict:
 def main():
     parser = argparse.ArgumentParser(description="GPU assignment algorithm for ODS")
     parser.add_argument("--topology",         required=True,  help="Path to topology JSON file")
-    parser.add_argument("--model-size",       required=True,  type=float, help="Model size in MB")
+    parser.add_argument("--model-size",       required=False, type=float, default=None,
+                        help="Model size in MB (required unless --check-gpus is given)")
     parser.add_argument("--enabled-services", default=",".join(DEFAULT_SERVICES),
                         help="Comma-separated list of enabled services")
+    parser.add_argument("--check-gpus", default=None,
+                        help="Comma-separated GPU indices. Print the parallelism "
+                             "select_parallelism() would recommend for exactly this "
+                             "subset today and exit, instead of running a full "
+                             "model-size-driven assignment. Used to detect drift "
+                             "between a persisted assignment and the current topology.")
     args = parser.parse_args()
 
     # Load topology
@@ -457,6 +464,38 @@ def main():
         sys.exit(1)
     except json.JSONDecodeError as e:
         print(f"ERROR: invalid JSON in topology file: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    if args.check_gpus is not None:
+        try:
+            indices = [int(x.strip()) for x in args.check_gpus.split(",") if x.strip() != ""]
+        except ValueError:
+            print("ERROR: --check-gpus must be a comma-separated list of integers", file=sys.stderr)
+            sys.exit(1)
+
+        gpus        = parse_gpus(topology)
+        links       = parse_links(topology)
+        rank_matrix = build_rank_matrix(links)
+        selected    = [g for g in gpus if g.index in indices]
+        if len(selected) != len(indices):
+            print("ERROR: one or more --check-gpus indices not found in topology", file=sys.stderr)
+            sys.exit(1)
+
+        subset      = compute_subset(selected, rank_matrix)
+        parallelism = select_parallelism(subset)
+        para = {
+            "mode":                   parallelism.mode,
+            "tensor_parallel_size":   parallelism.tensor_parallel_size,
+            "pipeline_parallel_size": parallelism.pipeline_parallel_size,
+            "gpu_memory_utilization": parallelism.gpu_memory_utilization,
+        }
+        if parallelism.tensor_split is not None:
+            para["tensor_split"] = parallelism.tensor_split
+        print(json.dumps({"parallelism": para, "min_link_rank": subset.min_link_rank}, indent=2))
+        return
+
+    if args.model_size is None:
+        print("ERROR: --model-size is required unless --check-gpus is given", file=sys.stderr)
         sys.exit(1)
 
     enabled_services = [s.strip() for s in args.enabled_services.split(",")]
