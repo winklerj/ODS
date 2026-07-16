@@ -3871,6 +3871,57 @@ _gpu_validate() {
         fi
     fi
 
+    # Check 4: current parallelism mode vs. what assign_gpus.py's topology-aware
+    # heuristic would pick for the same llama-server GPUs today. Tier selection
+    # only decides which model loads (see tier-map.sh) — this is the separate,
+    # GPU-count-dependent decision that can drift after a GPU swap or a
+    # hand-edited .env, without Check 1-3 ever noticing.
+    local topo_file="$INSTALL_DIR/config/gpu-topology.json"
+    local assign_script="$SCRIPT_DIR/scripts/assign_gpus.py"
+    local raw_llama_count=0
+
+    if [[ "$backend" == "amd" ]]; then
+        raw_llama_count=$(echo "${LLAMA_SERVER_GPU_INDICES:-}" | tr ',' '\n' | grep -c . 2>/dev/null) || raw_llama_count=0
+    else
+        raw_llama_count=$(echo "$llama_uuids" | tr ',' '\n' | grep -c . 2>/dev/null) || raw_llama_count=0
+    fi
+
+    if [[ "$raw_llama_count" -gt 1 ]]; then
+        if [[ ! -f "$topo_file" ]]; then
+            echo "  (Skipping parallelism-mode check — no cached topology at ${topo_file}; run 'ods gpu reassign' to refresh it)"
+        elif [[ ! -f "$assign_script" ]] || ! command -v python3 &>/dev/null; then
+            : # assignment script/python3 unavailable — nothing to compare against
+        else
+            local current_indices=""
+            if [[ "$backend" == "amd" ]]; then
+                current_indices="${LLAMA_SERVER_GPU_INDICES:-}"
+            else
+                current_indices=$(echo "$llama_uuids" | tr ',' '\n' | while IFS= read -r uuid; do
+                    [[ -z "$uuid" ]] && continue
+                    jq -r --arg u "$uuid" '.gpus[] | select(.uuid == $u) | .index' "$topo_file" 2>/dev/null
+                done | paste -sd, -)
+            fi
+
+            local recommendation recommended_mode recommended_split
+            if [[ -n "$current_indices" ]] && recommendation=$(python3 "$assign_script" --topology "$topo_file" --check-gpus "$current_indices" 2>/dev/null); then
+                recommended_mode=$(echo "$recommendation" | jq -r '.parallelism.mode // "none"')
+                case "$recommended_mode" in
+                    tensor|hybrid) recommended_split="row" ;;
+                    pipeline)      recommended_split="layer" ;;
+                    *)             recommended_split="none" ;;
+                esac
+                if [[ "$recommended_split" == "$split_mode" ]]; then
+                    success "LLAMA_ARG_SPLIT_MODE=${split_mode} matches the topology-recommended mode (${recommended_mode})"
+                    ((pass++)) || true
+                else
+                    warn "LLAMA_ARG_SPLIT_MODE=${split_mode:-none} differs from the topology-recommended mode (${recommended_mode} -> split_mode=${recommended_split})"
+                    echo "    Fix: review 'ods gpu reassign --auto --dry-run', then apply with 'ods gpu reassign --auto' if it looks right"
+                    ((fail++)) || true
+                fi
+            fi
+        fi
+    fi
+
     echo ""
     echo "  Result: ${pass} check(s) passed, ${fail} failed"
 }
